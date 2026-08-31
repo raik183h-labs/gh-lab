@@ -9,7 +9,7 @@ CLASSROOMS="raik183h-labs/raik-183h-labs RAIK183H-Fall2026/raik-183h"
 # Course editor extensions. Checkstyle isn't on Open VSX, so it ships as a file.
 EXTENSIONS="specstory.specstory-vscode xyz.local-history redhat.java"
 CHECKSTYLE_ID="shengchen.vscode-checkstyle"
-CHECKSTYLE_VSIX="https://raw.githubusercontent.com/RAIK183H-Fall2026/cursor-setup/main/CheckstyleForJava.vsix"
+CHECKSTYLE_VSIX="https://raw.githubusercontent.com/raik183h-labs/setup/main/CheckstyleForJava.vsix"
 
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 ok()  { printf '  \033[32m✓\033[0m %s\n' "$*"; }

@@ -3,7 +3,7 @@
 One command to start a RAIK183H lab.
 
 ```
-gh extension install RAIK183H-Fall2026/gh-lab
+gh extension install raik183h-labs/gh-lab
 ```
 
 Then, from the folder where you keep your course work:
