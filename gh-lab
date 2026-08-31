@@ -37,7 +37,7 @@ if [ "$SLUG" = "--check" ] || [ "$SLUG" = "doctor" ]; then
   else bad "not signed in — run:  gh student login"; fi
   if gh student --help >/dev/null 2>&1; then ok "gh student   installed"
   else bad "gh student   missing — it installs itself the first time you run a lab"; fi
-  if gh auth status --active 2>&1 | grep -q "admin:org"; then ok "permissions  ok"
+  if printf '%s' "$(gh auth status --active 2>&1)" | grep -q "admin:org"; then ok "permissions  ok"
   else bad "permissions  incomplete — run:  gh student login"; fi
   if   command -v cursor >/dev/null 2>&1; then ok "editor       cursor"
   elif command -v code   >/dev/null 2>&1; then ok "editor       code"
@@ -132,7 +132,10 @@ partner_started() {
 
 created_at() { gh api "repos/$1" --jq .created_at 2>/dev/null; }
 
-has_accept_scope() { gh auth status --active 2>&1 | grep -q "admin:org"; }
+# Capture first: `cmd | grep -q` can SIGPIPE cmd, and pipefail turns that into
+# a false negative.
+auth_scopes() { gh auth status --active 2>&1; }
+has_accept_scope() { printf '%s' "$(auth_scopes)" | grep -q "admin:org"; }
 
 require_accept_scope() {   # only STARTING a repo needs this; joining one doesn't
   has_accept_scope && return 0
