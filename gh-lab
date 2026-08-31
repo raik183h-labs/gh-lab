@@ -17,9 +17,13 @@ bad() { printf '  \033[31m✗\033[0m %s\n' "$*"; }
 die() { bad "$*"; printf '\n  Stuck? Show this message to your instructor or a TA.\n\n'; exit 1; }
 lc()  { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
 
+CMD="${RAIK_CMD:-lab}"
 SLUG="${1:-}"
 if [ -z "$SLUG" ]; then
-  printf 'Usage:  gh lab <assignment-name>\nExample: gh lab lab-loops-1\n\nStuck? Run:  gh lab --check\n'; exit 1
+  printf 'Usage:  gh %s <assignment-name>\n' "$CMD"
+  if [ "$CMD" = homework ]; then printf 'Example: gh homework homework-3\n'
+  else printf 'Example: gh lab lab-loops-1\n'; fi
+  printf '\nStuck? Run:  gh %s --check\n' "$CMD"; exit 1
 fi
 
 if [ "$SLUG" = "--check" ] || [ "$SLUG" = "doctor" ]; then
@@ -60,26 +64,37 @@ gh student --help >/dev/null 2>&1 || {
 ok "student tools"
 
 # find which classroom publishes this assignment (no login needed — it's a static file)
-ORG=""; CR=""
+ORG=""; CR=""; MODE="individual"
 for pair in $CLASSROOMS; do
   o="${pair%%/*}"; c="${pair##*/}"
   url="https://$(lc "$o").github.io/classroom50/$c/assignments.json"
-  if curl -fsSL "$url" 2>/dev/null | grep -q "\"$SLUG\""; then ORG="$o"; CR="$c"; break; fi
+  doc=$(curl -fsSL "$url" 2>/dev/null) || continue
+  printf '%s' "$doc" | grep -q "\"slug\": \"$SLUG\"" || continue
+  ORG="$o"; CR="$c"
+  # "mode" sits a few lines below its slug in the same record
+  m=$(printf '%s' "$doc" | grep -A 16 "\"slug\": \"$SLUG\"" | grep -m1 '"mode"' \
+       | sed 's/.*"mode"[^"]*"\([^"]*\)".*/\1/')
+  [ -n "$m" ] && MODE="$m"
+  break
 done
 [ -z "$ORG" ] && die "No assignment called '$SLUG'. Check the spelling against what your instructor posted."
 ok "found $SLUG"
 
-say "Who are you working with today?"
 PARTNER=""
-printf '  Partner'"'"'s GitHub username (press Enter if working alone): '
-if ! { read -r PARTNER </dev/tty; } 2>/dev/null; then read -r PARTNER || PARTNER=""; fi
-# tolerate "@name", a profile URL, or stray spaces
-PARTNER="$(printf '%s' "${PARTNER:-}" | tr -d '[:space:]' | sed 's|.*/||; s|^@||')"
-if [ -n "$PARTNER" ]; then
-  gh api "users/$PARTNER" --jq .login >/dev/null 2>&1 \
-    || die "There's no GitHub user called '$PARTNER'. That's their username, not their real name."
-  [ "$(lc "$PARTNER")" = "$(lc "$ME")" ] && die "That's your own username — enter your partner's."
-  ok "partner: $PARTNER"
+if [ "$MODE" = "group" ]; then
+  say "Who are you working with today?"
+  printf '  Partner'"'"'s GitHub username (press Enter if working alone): '
+  if ! { read -r PARTNER </dev/tty; } 2>/dev/null; then read -r PARTNER || PARTNER=""; fi
+  # tolerate "@name", a profile URL, or stray spaces
+  PARTNER="$(printf '%s' "${PARTNER:-}" | tr -d '[:space:]' | sed 's|.*/||; s|^@||')"
+  if [ -n "$PARTNER" ]; then
+    gh api "users/$PARTNER" --jq .login >/dev/null 2>&1 \
+      || die "There's no GitHub user called '$PARTNER'. That's their username, not their real name."
+    [ "$(lc "$PARTNER")" = "$(lc "$ME")" ] && die "That's your own username — enter your partner's."
+    ok "partner: $PARTNER"
+  fi
+else
+  ok "this one is individual work — no partner needed"
 fi
 
 MINE="$ORG/$CR-$SLUG-$(lc "$ME")"
