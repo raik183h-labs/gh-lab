@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# gh lab <assignment>  —  RAIK183H
+# Accepts the assignment (or joins your partner's), adds your partner,
+# downloads the code, and opens it. Safe to run again any time.
+set -uo pipefail
+
+CLASSROOMS="raik183h-labs/raik-183h-labs RAIK183H-Fall2026/raik-183h"
+
+say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+ok()  { printf '  \033[32m✓\033[0m %s\n' "$*"; }
+bad() { printf '  \033[31m✗\033[0m %s\n' "$*"; }
+die() { bad "$*"; printf '\n  Stuck? Show this message to your instructor or a TA.\n\n'; exit 1; }
+lc()  { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
+
+SLUG="${1:-}"
+if [ -z "$SLUG" ]; then
+  printf 'Usage:  gh lab <assignment-name>\nExample: gh lab lab-loops-1\n\nStuck? Run:  gh lab --check\n'; exit 1
+fi
+
+if [ "$SLUG" = "--check" ] || [ "$SLUG" = "doctor" ]; then
+  say "Setup check"
+  printf '  OS ............ %s\n' "$(uname -s 2>/dev/null || echo unknown)"
+  if command -v git >/dev/null 2>&1; then ok "git          $(git --version | awk '{print $3}')"
+  else bad "git          NOT FOUND  — install it, then close and reopen your terminal"; fi
+  if command -v gh  >/dev/null 2>&1; then ok "gh           $(gh --version | head -1 | awk '{print $3}')"
+  else bad "gh           NOT FOUND  — install it, then close and reopen your terminal"; fi
+  if gh auth status >/dev/null 2>&1; then ok "signed in as $(gh api user --jq .login 2>/dev/null)"
+  else bad "not signed in — run:  gh auth login"; fi
+  if gh student --help >/dev/null 2>&1; then ok "gh student   installed"
+  else bad "gh student   missing — it installs itself the first time you run a lab"; fi
+  if   command -v cursor >/dev/null 2>&1; then ok "editor       cursor"
+  elif command -v code   >/dev/null 2>&1; then ok "editor       code"
+  else bad "editor       no 'cursor' command — labs still work, they just won't auto-open"; fi
+  for pair in $CLASSROOMS; do
+    o="${pair%%/*}"; c="${pair##*/}"
+    if curl -fsSL "https://$(lc "$o").github.io/classroom50/$c/assignments.json" >/dev/null 2>&1
+      then ok "classroom    $o reachable"; else bad "classroom    can't reach $o — check your internet"; fi
+  done
+  printf '\n  Show this whole output to your instructor or a TA if something is red.\n\n'
+  exit 0
+fi
+
+say "Checking your setup"
+command -v git >/dev/null 2>&1 || die "git isn't installed. See the course setup guide."
+ok "git"
+gh auth status >/dev/null 2>&1 || die "You're not signed in. Run:  gh auth login"
+ME=$(gh api user --jq .login 2>/dev/null) || die "Couldn't reach GitHub. Check your internet."
+ok "signed in as $ME"
+gh student --help >/dev/null 2>&1 || {
+  printf '  setting up the student tools...\n'
+  gh extension install foundation50/gh-student >/dev/null 2>&1 || die "Couldn't install gh-student."
+}
+ok "student tools"
+
+# find which classroom publishes this assignment (no login needed — it's a static file)
+ORG=""; CR=""
+for pair in $CLASSROOMS; do
+  o="${pair%%/*}"; c="${pair##*/}"
+  url="https://$(lc "$o").github.io/classroom50/$c/assignments.json"
+  if curl -fsSL "$url" 2>/dev/null | grep -q "\"$SLUG\""; then ORG="$o"; CR="$c"; break; fi
+done
+[ -z "$ORG" ] && die "No assignment called '$SLUG'. Check the spelling against what your instructor posted."
+ok "found $SLUG"
+
+say "Who are you working with today?"
+printf '  Partner'"'"'s GitHub username (press Enter if working alone): '
+read -r PARTNER </dev/tty
+PARTNER="$(printf '%s' "$PARTNER" | tr -d '[:space:]')"
+if [ -n "$PARTNER" ]; then
+  gh api "users/$PARTNER" --jq .login >/dev/null 2>&1 \
+    || die "There's no GitHub user called '$PARTNER'. That's their username, not their real name."
+  [ "$(lc "$PARTNER")" = "$(lc "$ME")" ] && die "That's your own username — enter your partner's."
+  ok "partner: $PARTNER"
+fi
+
+MINE="$ORG/$CR-$SLUG-$(lc "$ME")"
+THEIRS=""; [ -n "$PARTNER" ] && THEIRS="$ORG/$CR-$SLUG-$(lc "$PARTNER")"
+
+accept_invite() {
+  local repo="$1" id
+  id=$(gh api user/repository_invitations --paginate \
+        --jq ".[] | select(.repository.full_name == \"$repo\") | .id" 2>/dev/null | head -1)
+  [ -z "$id" ] && return 1
+  gh api -X PATCH "user/repository_invitations/$id" --silent 2>/dev/null
+}
+
+join_repo() {   # accept our own invitation to $1 if we don't have access yet
+  gh api "repos/$1/collaborators/$ME" --silent 2>/dev/null && return 0
+  printf '  getting you access...\n'
+  for _ in 1 2 3 4 5 6; do
+    accept_invite "$1" && return 0
+    gh api "repos/$1/collaborators/$ME" --silent 2>/dev/null && return 0
+    sleep 3
+  done
+  return 1
+}
+
+created_at() { gh api "repos/$1" --jq .created_at 2>/dev/null; }
+
+say "Setting up"
+M=0; T=0
+gh api "repos/$MINE" --silent 2>/dev/null && M=1
+[ -n "$THEIRS" ] && gh api "repos/$THEIRS" --silent 2>/dev/null && T=1
+
+if [ "$T" = 1 ] && [ "$M" = 0 ]; then
+  # Partner got here first — join them, no new repo.
+  REPO="$THEIRS"
+  ok "$PARTNER started this one — joining their repo"
+  join_repo "$REPO" || die "No invitation from $PARTNER yet. Wait a few seconds and run this again."
+  ok "you have access"
+else
+  if [ "$M" = 1 ]; then
+    REPO="$MINE"; ok "picking up where you left off"
+  else
+    REPO="$MINE"
+    gh student accept "$ORG" "$CR" "$SLUG" >/dev/null 2>&1 \
+      || die "Couldn't start '$SLUG'. Have you accepted your invitation to github.com/$ORG?"
+    ok "started your team's repo"
+  fi
+
+  # Your partner may have started at the same moment. Re-check, and if you both
+  # did, the repo that was actually created FIRST wins. Both of you run this
+  # same check and reach the same answer.
+  if [ -n "$THEIRS" ] && gh api "repos/$THEIRS" --silent 2>/dev/null; then
+    mine_at=$(created_at "$MINE"); theirs_at=$(created_at "$THEIRS")
+    if [ -n "$theirs_at" ] && [ -n "$mine_at" ] && [ "$theirs_at" \< "$mine_at" ]; then
+      bad "You and $PARTNER started at the same moment — theirs came first."
+      printf '  Switching to their repo so your work stays together.\n'
+      REPO="$THEIRS"
+      join_repo "$REPO" || die "Couldn't get access to $PARTNER's repo. Tell your instructor."
+      ok "joined $PARTNER's repo"
+      printf '  (Your instructor will clean up the spare one — don'"'"'t worry about it.)\n'
+    else
+      ok "you and $PARTNER started together — yours came first, so it'"'"'s the one you'"'"'ll both use"
+    fi
+  fi
+fi
+
+if [ -n "$PARTNER" ] && [ "$REPO" = "$MINE" ]; then
+  if gh api "repos/$REPO/collaborators/$PARTNER" --silent 2>/dev/null; then ok "$PARTNER already has access"
+  else
+    gh student invite "$REPO" "$PARTNER" >/dev/null 2>&1 \
+      && ok "added $PARTNER — they just run the same command" \
+      || bad "Couldn't add $PARTNER — are they enrolled? Tell your instructor."
+  fi
+fi
+
+DIR="$(basename "$REPO")"
+say "Getting the code"
+if [ -d "$DIR/.git" ]; then
+  (cd "$DIR" && git pull --ff-only >/dev/null 2>&1) && ok "updated to the latest" || bad "couldn't update — ask a TA"
+else
+  gh repo clone "$REPO" "$DIR" >/dev/null 2>&1 || die "Couldn't download the code."
+  ok "downloaded"
+fi
+
+say "Opening"
+if   command -v cursor >/dev/null 2>&1; then (cursor "$DIR" >/dev/null 2>&1 &) ; ok "opened in Cursor"
+elif command -v code   >/dev/null 2>&1; then (code   "$DIR" >/dev/null 2>&1 &) ; ok "opened in VS Code"
+else
+  bad "Couldn't open your editor automatically."
+  printf "  Open this folder yourself:  %s\n" "$(cd "$DIR" && pwd)"
+  printf "  (Fix for next time: in Cursor press Cmd/Ctrl+Shift+P, run \"Install 'cursor' command\")\n"
+fi
+printf '\n  \033[1mReady.\033[0m Your work goes in %s/\n' "$DIR"
+printf '  To turn it in: commit and push from the Source Control panel.\n\n'
