@@ -65,7 +65,7 @@ ok "found $SLUG"
 say "Who are you working with today?"
 PARTNER=""
 printf '  Partner'"'"'s GitHub username (press Enter if working alone): '
-if ! read -r PARTNER </dev/tty 2>/dev/null; then read -r PARTNER || PARTNER=""; fi
+if ! { read -r PARTNER </dev/tty; } 2>/dev/null; then read -r PARTNER || PARTNER=""; fi
 # tolerate "@name", a profile URL, or stray spaces
 PARTNER="$(printf '%s' "${PARTNER:-}" | tr -d '[:space:]' | sed 's|.*/||; s|^@||')"
 if [ -n "$PARTNER" ]; then
