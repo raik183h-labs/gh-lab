@@ -49,8 +49,8 @@ if [ "$SLUG" = "--check" ] || [ "$SLUG" = "doctor" ]; then
   elif command -v code   >/dev/null 2>&1; then ED=code; fi
   if [ -n "$ED" ]; then
     ok "editor       $ED"
-    have="$("$ED" --list-extensions 2>/dev/null | tr 'A-Z' 'a-z')"
-    if [ -z "$have" ]; then
+    if have="$("$ED" --list-extensions 2>/dev/null | tr 'A-Z' 'a-z')"; then :; else have=""; fi
+    if [ -z "$have" ] && ! "$ED" --list-extensions >/dev/null 2>&1; then
       bad "extensions   couldn't ask $ED — open $ED once, then run this again"
     else
       for e in $EXTENSIONS $CHECKSTYLE_ID; do
