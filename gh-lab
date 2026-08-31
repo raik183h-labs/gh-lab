@@ -30,7 +30,7 @@ if [ "$SLUG" = "--check" ] || [ "$SLUG" = "doctor" ]; then
   if command -v gh  >/dev/null 2>&1; then ok "gh           $(gh --version | head -1 | awk '{print $3}')"
   else bad "gh           NOT FOUND  — install it, then close and reopen your terminal"; fi
   if gh auth status >/dev/null 2>&1; then ok "signed in as $(gh api user --jq .login 2>/dev/null)"
-  else bad "not signed in — run:  gh auth login"; fi
+  else bad "not signed in — run:  gh student login"; fi
   if gh student --help >/dev/null 2>&1; then ok "gh student   installed"
   else bad "gh student   missing — it installs itself the first time you run a lab"; fi
   if gh auth status --active 2>&1 | grep -q "admin:org"; then ok "permissions  ok"
@@ -50,7 +50,7 @@ fi
 say "Checking your setup"
 command -v git >/dev/null 2>&1 || die "git isn't installed. See the course setup guide."
 ok "git"
-gh auth status >/dev/null 2>&1 || die "You're not signed in. Run:  gh auth login"
+gh auth status >/dev/null 2>&1 || die "You are not signed in. Run:  gh student login"
 ME=$(gh api user --jq .login 2>/dev/null) || die "Couldn't reach GitHub. Check your internet."
 ok "signed in as $ME"
 gh student --help >/dev/null 2>&1 || {
