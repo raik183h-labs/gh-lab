@@ -185,8 +185,10 @@ else
   else
     REPO="$MINE"
     require_accept_scope
-    gh student accept "$ORG" "$CR" "$SLUG" >/dev/null 2>&1 \
-      || die "Couldn't start '$SLUG'. Have you accepted your invitation to github.com/$ORG?"
+    if ! ACCEPT_ERR="$(gh student accept "$ORG" "$CR" "$SLUG" 2>&1)"; then
+      [ -n "$ACCEPT_ERR" ] && printf '%s\n' "  $ACCEPT_ERR" >&2
+      die "Couldn't start '$SLUG'. If the message above mentions an invitation, accept yours at github.com/$ORG — otherwise show this to your instructor."
+    fi
     if [ "$MODE" = "group" ]; then ok "started your team's repo"; else ok "started your repo"; fi
   fi
 
@@ -223,7 +225,10 @@ say "Getting the code"
 if [ -d "$DIR/.git" ]; then
   (cd "$DIR" && git pull --ff-only >/dev/null 2>&1) && ok "updated to the latest" || bad "couldn't update — ask a TA"
 else
-  gh repo clone "$REPO" "$DIR" >/dev/null 2>&1 || die "Couldn't download the code."
+  if ! CLONE_ERR="$(gh repo clone "$REPO" "$DIR" 2>&1)"; then
+    [ -n "$CLONE_ERR" ] && printf '%s\n' "  $CLONE_ERR" >&2
+    die "Couldn't download the code. The message above says why."
+  fi
   ok "downloaded"
 fi
 
@@ -265,7 +270,11 @@ fi
 
 say "Opening"
 if [ -n "$EDITOR" ]; then
-  ("$EDITOR" "$DIR" >/dev/null 2>&1 &) ; ok "opened in $EDITOR"
+  if "$EDITOR" "$DIR" >/dev/null 2>&1; then ok "opened in $EDITOR"
+  else
+    bad "Couldn't open your editor automatically."
+    printf "  Open this folder yourself:  %s\n" "$(cd "$DIR" && pwd)"
+  fi
 else
   bad "Couldn't open your editor automatically."
   printf "  Open this folder yourself:  %s\n" "$(cd "$DIR" && pwd)"
