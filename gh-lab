@@ -165,7 +165,7 @@ else
     require_accept_scope
     gh student accept "$ORG" "$CR" "$SLUG" >/dev/null 2>&1 \
       || die "Couldn't start '$SLUG'. Have you accepted your invitation to github.com/$ORG?"
-    ok "started your team's repo"
+    if [ "$MODE" = "group" ]; then ok "started your team's repo"; else ok "started your repo"; fi
   fi
 
   # Your partner may have started at the same moment. Re-check, and if you both
