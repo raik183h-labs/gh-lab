@@ -39,9 +39,26 @@ if [ "$SLUG" = "--check" ] || [ "$SLUG" = "doctor" ]; then
   else bad "gh student   missing — it installs itself the first time you run a lab"; fi
   if printf '%s' "$(gh auth status --active 2>&1)" | grep -q "admin:org"; then ok "permissions  ok"
   else bad "permissions  incomplete — run:  gh student login"; fi
-  if   command -v cursor >/dev/null 2>&1; then ok "editor       cursor"
-  elif command -v code   >/dev/null 2>&1; then ok "editor       code"
-  else bad "editor       no 'cursor' command — labs still work, they just won't auto-open"; fi
+  ED=""
+  if   command -v cursor >/dev/null 2>&1; then ED=cursor
+  elif command -v code   >/dev/null 2>&1; then ED=code; fi
+  if [ -n "$ED" ]; then
+    ok "editor       $ED"
+    have="$("$ED" --list-extensions 2>/dev/null | tr 'A-Z' 'a-z')"
+    if [ -z "$have" ]; then
+      bad "extensions   couldn't ask $ED — open $ED once, then run this again"
+    else
+      for e in $EXTENSIONS $CHECKSTYLE_ID; do
+        label="${e#*.}"
+        if printf '%s\n' "$have" | grep -qx "$(lc "$e")"
+          then ok "  $(printf '%-24s' "$label") installed"
+          else bad "  $(printf '%-24s' "$label") MISSING — it installs when you run your first lab"; fi
+      done
+    fi
+  else
+    bad "editor       no 'cursor' command — labs still work, they just won't auto-open"
+    bad "extensions   can't check them without the 'cursor' command"
+  fi
   for pair in $CLASSROOMS; do
     o="${pair%%/*}"; c="${pair##*/}"
     if curl -fsSL "https://$(lc "$o").github.io/classroom50/$c/assignments.json" >/dev/null 2>&1
