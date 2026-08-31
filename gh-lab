@@ -39,6 +39,11 @@ if [ "$SLUG" = "--check" ] || [ "$SLUG" = "doctor" ]; then
   else bad "gh student   missing — it installs itself the first time you run a lab"; fi
   if printf '%s' "$(gh auth status --active 2>&1)" | grep -q "admin:org"; then ok "permissions  ok"
   else bad "permissions  incomplete — run:  gh student login"; fi
+  proto="$(gh config get git_protocol -h github.com 2>/dev/null)"
+  if [ "$proto" = "ssh" ]; then
+    bad "git protocol ssh — labs can't download. Fix with:"
+    printf '                 gh config set git_protocol https -h github.com\n'
+  else ok "git protocol ${proto:-https}"; fi
   ED=""
   if   command -v cursor >/dev/null 2>&1; then ED=cursor
   elif command -v code   >/dev/null 2>&1; then ED=code; fi
