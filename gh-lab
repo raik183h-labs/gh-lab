@@ -232,6 +232,35 @@ else
   ok "downloaded"
 fi
 
+# Keep one editor window for the whole course. The workspace file lists every
+# assignment folder sitting next to this one, so opening it shows them all in a
+# single window instead of one window per assignment. Rebuilt from what's
+# actually on disk each time — no JSON parsing, and it repairs itself if the
+# file gets mangled.
+WS_DIR="$(cd "$(dirname "$DIR")" && pwd)"
+WS="$WS_DIR/RAIK183H.code-workspace"
+
+build_workspace() {
+  local d n first=1 tmp="$WS.tmp"
+  {
+    printf '{\n  "folders": [\n'
+    for d in "$WS_DIR"/*/; do
+      [ -d "$d" ] || continue          # no subfolders: glob stayed literal
+      [ -d "$d.git" ] || continue      # only real assignment repos
+      n="$(basename "$d")"
+      [ "$first" -eq 1 ] || printf ',\n'
+      first=0
+      printf '    { "path": "%s" }' "$n"
+    done
+    printf '\n  ],\n  "settings": {}\n}\n'
+  } > "$tmp" 2>/dev/null && mv "$tmp" "$WS" || { rm -f "$tmp"; return 1; }
+  [ "$first" -eq 1 ] && { rm -f "$WS"; return 1; }   # nothing to list
+  return 0
+}
+
+WS_OK=0
+build_workspace && WS_OK=1
+
 EDITOR=""
 if   command -v cursor >/dev/null 2>&1; then EDITOR=cursor
 elif command -v code   >/dev/null 2>&1; then EDITOR=code
@@ -270,10 +299,19 @@ fi
 
 say "Opening"
 if [ -n "$EDITOR" ]; then
-  if "$EDITOR" "$DIR" >/dev/null 2>&1; then ok "opened in $EDITOR"
+  TARGET="$DIR"; WHAT="opened in $EDITOR"
+  if [ "$WS_OK" = 1 ]; then
+    TARGET="$WS"
+    WHAT="opened your course workspace — every assignment is in this one window"
+  fi
+  if "$EDITOR" "$TARGET" >/dev/null 2>&1; then ok "$WHAT"
   else
     bad "Couldn't open your editor automatically."
-    printf "  Open this folder yourself:  %s\n" "$(cd "$DIR" && pwd)"
+    if [ "$WS_OK" = 1 ]; then
+      printf "  Open this file yourself (File > Open):  %s\n" "$WS"
+    else
+      printf "  Open this folder yourself:  %s\n" "$(cd "$DIR" && pwd)"
+    fi
   fi
 else
   bad "Couldn't open your editor automatically."
