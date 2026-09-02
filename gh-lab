@@ -26,6 +26,21 @@ if [ -z "$SLUG" ]; then
   printf '\nStuck? Run:  gh %s --check\n' "$CMD"; exit 1
 fi
 
+# Where assignments get downloaded. Set once with `gh lab --here`; kept in git
+# config so it works the same in Terminal and Git Bash and survives reinstalls.
+course_dir() { git config --global --get raik.coursedir 2>/dev/null; }
+
+if [ "$SLUG" = "--here" ]; then
+  say "Course folder"
+  if git config --global raik.coursedir "$PWD" 2>/dev/null; then
+    ok "$PWD"
+    printf '\n  From now on, %s puts every assignment here — no matter\n' "gh $CMD"
+    printf '  which folder your terminal is in when you run it.\n\n'
+    exit 0
+  fi
+  die "Couldn't save that. Is git installed?"
+fi
+
 if [ "$SLUG" = "--check" ] || [ "$SLUG" = "doctor" ]; then
   say "Setup check"
   printf '  OS ............ %s\n' "$(uname -s 2>/dev/null || echo unknown)"
@@ -44,6 +59,11 @@ if [ "$SLUG" = "--check" ] || [ "$SLUG" = "doctor" ]; then
     bad "git protocol ssh — labs can't download. Fix with:"
     printf '                 gh config set git_protocol https -h github.com\n'
   else ok "git protocol ${proto:-https}"; fi
+  cd_now="$(course_dir)"
+  if [ -z "$cd_now" ]; then
+    bad "course folder not set — cd to your course folder and run:  gh $CMD --here"
+  elif [ -d "$cd_now" ]; then ok "course folder $cd_now"
+  else bad "course folder $cd_now (missing — re-run 'gh $CMD --here' somewhere that exists)"; fi
   ED=""
   if   command -v cursor >/dev/null 2>&1; then ED=cursor
   elif command -v code   >/dev/null 2>&1; then ED=code; fi
@@ -220,16 +240,44 @@ if [ -n "$PARTNER" ] && [ "$REPO" = "$MINE" ]; then
   fi
 fi
 
-DIR="$(basename "$REPO")"
+NAME="$(basename "$REPO")"
+COURSE="$(course_dir)"
+
+# Already have this one somewhere? Use it. Downloading a second copy is worse
+# than downloading none — work goes into one copy and gets pushed from neither.
+find_existing() {
+  local p hit
+  for p in "$COURSE/$NAME" "$PWD/$NAME" "$HOME/$NAME" "$HOME/Desktop/$NAME" "$HOME/Documents/$NAME"; do
+    case "$p" in /"$NAME") continue ;; esac      # COURSE empty -> bogus path
+    [ -d "$p/.git" ] && { (cd "$p" && pwd); return 0; }
+  done
+  hit="$(find "$HOME" -maxdepth 3 -type d -name "$NAME" -not -path "*/.*" \
+           -not -path "$HOME/Library/*" -print -quit 2>/dev/null)"
+  [ -n "$hit" ] && [ -d "$hit/.git" ] && { printf '%s\n' "$hit"; return 0; }
+  return 1
+}
+
 say "Getting the code"
-if [ -d "$DIR/.git" ]; then
+DIR="$(find_existing)" || DIR=""
+
+if [ -n "$DIR" ]; then
   (cd "$DIR" && git pull --ff-only >/dev/null 2>&1) && ok "updated to the latest" || bad "couldn't update — ask a TA"
+  ok "using the copy you already have: $DIR"
 else
+  if [ -n "$COURSE" ] && [ -d "$COURSE" ]; then DIR="$COURSE/$NAME"
+  else
+    DIR="$NAME"
+    NO_COURSE_DIR=1
+  fi
   if ! CLONE_ERR="$(gh repo clone "$REPO" "$DIR" 2>&1)"; then
     [ -n "$CLONE_ERR" ] && printf '%s\n' "  $CLONE_ERR" >&2
     die "Couldn't download the code. The message above says why."
   fi
-  ok "downloaded"
+  ok "downloaded to $(cd "$DIR" && pwd)"
+  if [ "${NO_COURSE_DIR:-0}" = 1 ]; then
+    printf '  Tip: cd to your course folder and run  gh %s --here  once, and\n' "$CMD"
+    printf '       assignments will always land there instead of wherever you are.\n'
+  fi
 fi
 
 # Keep one editor window for the whole course. The workspace file lists every
