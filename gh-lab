@@ -280,6 +280,26 @@ wait_for_content() {
 
 is_empty_clone() { ! (cd "$1" && git rev-parse HEAD >/dev/null 2>&1); }
 
+# A checkout that never completed. Windows refuses paths containing : < > " | ? *
+# so git aborts the whole checkout, leaving a valid repo whose working tree is
+# empty — git status then reports every tracked file as deleted. HEAD resolves
+# fine, so is_empty_clone() does NOT catch this.
+# Guard: only when EVERY tracked file is missing. Then there is no work to lose.
+checkout_broken() {
+  local total missing
+  total="$(cd "$1" && git ls-files 2>/dev/null | wc -l | tr -d ' ')"
+  [ "${total:-0}" -gt 0 ] 2>/dev/null || return 1
+  missing="$(cd "$1" && git ls-files --deleted 2>/dev/null | wc -l | tr -d ' ')"
+  [ "$missing" = "$total" ]
+}
+
+repair_checkout() {
+  local br
+  br="$(cd "$1" && git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  [ -n "$br" ] && [ "$br" != HEAD ] || br=main
+  (cd "$1" && git fetch origin >/dev/null 2>&1 && git reset --hard "origin/$br" >/dev/null 2>&1)
+}
+
 fill_empty_clone() {
   wait_for_content "$REPO" || return 1
   (cd "$1" && git pull --ff-only origin HEAD >/dev/null 2>&1)
@@ -294,6 +314,10 @@ if [ -n "$DIR" ]; then
   if is_empty_clone "$DIR"; then
     bad "the copy you have is empty — repairing it"
     fill_empty_clone "$DIR" && ok "repaired — your files are there now" || die "$NOT_READY"
+  elif checkout_broken "$DIR"; then
+    bad "your files didn't unpack properly — repairing it"
+    repair_checkout "$DIR" && ok "repaired — your files are there now" \
+      || die "Couldn't repair it. Show a TA this folder: $DIR"
   else
     (cd "$DIR" && git pull --ff-only >/dev/null 2>&1) && ok "updated to the latest" || bad "couldn't update — ask a TA"
   fi
