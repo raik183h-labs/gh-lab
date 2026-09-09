@@ -37,6 +37,39 @@ blocked_note() {
   printf '  Sign in with:  gh auth login -s admin:org,read:org,repo,workflow\n'
 }
 
+# Keep ourselves current without asking 60 students to run an upgrade command.
+# Cheap: the local sha is on disk, and one ls-remote says whether it moved.
+# Fails open — offline, no remote, or a failed upgrade all just continue on the
+# version already installed.
+lab_ext_dir() {
+  local d
+  for d in "${XDG_DATA_HOME:-$HOME/.local/share}/gh/extensions/gh-lab" \
+           "$HOME/.local/share/gh/extensions/gh-lab" \
+           "${LOCALAPPDATA:-$HOME/AppData/Local}/GitHub CLI/extensions/gh-lab"; do
+    [ -d "$d/.git" ] && { printf '%s' "$d"; return 0; }
+  done
+  return 1
+}
+
+self_update() {
+  [ -n "${RAIK_UPDATED:-}" ] && return 0          # already re-executed once
+  [ -n "${RAIK_NO_UPDATE:-}" ] && return 0        # escape hatch
+  local dir here there
+  dir="$(lab_ext_dir)" || return 0
+  here="$(git -C "$dir" rev-parse HEAD 2>/dev/null)" || return 0
+  # GIT_TERMINAL_PROMPT=0 so a credential prompt can never hang a student
+  there="$(GIT_TERMINAL_PROMPT=0 git -C "$dir" ls-remote origin HEAD 2>/dev/null | awk 'NR==1{print $1}')"
+  [ -n "$there" ] || return 0                     # offline
+  [ "$here" = "$there" ] && return 0              # already current
+  printf '  updating the course tools...\n'
+  gh extension upgrade lab >/dev/null 2>&1 || return 0
+  # Re-exec so the rest of this run uses the new script. Safe because this
+  # whole function was parsed before any of it ran, so bash never reads further
+  # from the file we just replaced.
+  RAIK_UPDATED=1 exec bash "$dir/gh-lab" "$@"
+}
+self_update "$@"
+
 CMD="${RAIK_CMD:-lab}"
 SLUG="${1:-}"
 if [ -z "$SLUG" ]; then
