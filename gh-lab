@@ -17,6 +17,26 @@ bad() { printf '  \033[31m✗\033[0m %s\n' "$*"; }
 die() { bad "$*"; printf '\n  Stuck? Show this message to your instructor or a TA.\n\n'; exit 1; }
 lc()  { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
 
+# Is gh-student ON DISK? `gh student --help` failing means either "not
+# installed" OR "installed but the OS refuses to run it" — and reinstalling a
+# blocked binary just fetches a NEWER unsigned build, which Windows trusts even
+# less. Never reinstall something that is already there.
+student_installed() {
+  local d
+  for d in "${XDG_DATA_HOME:-$HOME/.local/share}/gh/extensions/gh-student" \
+           "$HOME/.local/share/gh/extensions/gh-student" \
+           "${LOCALAPPDATA:-$HOME/AppData/Local}/GitHub CLI/extensions/gh-student"; do
+    [ -d "$d" ] && return 0
+  done
+  # no pipe into grep -q here: pipefail turns its early exit into a false negative
+  [ -n "$(gh extension list 2>/dev/null | grep 'gh-student')" ]
+}
+
+blocked_note() {
+  bad "gh student is installed but Windows is blocking it. This is not your fault."
+  printf '  Sign in with:  gh auth login -s admin:org,read:org,repo,workflow\n'
+}
+
 CMD="${RAIK_CMD:-lab}"
 SLUG="${1:-}"
 if [ -z "$SLUG" ]; then
@@ -51,6 +71,7 @@ if [ "$SLUG" = "--check" ] || [ "$SLUG" = "doctor" ]; then
   if gh auth status >/dev/null 2>&1; then ok "signed in as $(gh api user --jq .login 2>/dev/null)"
   else bad "not signed in — run:  gh student login"; fi
   if gh student --help >/dev/null 2>&1; then ok "gh student   installed"
+  elif student_installed; then bad "gh student   installed, but blocked by Windows — see your instructor"
   else bad "gh student   missing — it installs itself the first time you run a lab"; fi
   if printf '%s' "$(gh auth status --active 2>&1)" | grep -q "admin:org"; then ok "permissions  ok"
   else bad "permissions  incomplete — run:  gh student login"; fi
@@ -99,11 +120,16 @@ ok "git"
 gh auth status >/dev/null 2>&1 || die "You are not signed in. Run:  gh student login"
 ME=$(gh api user --jq .login 2>/dev/null) || die "Couldn't reach GitHub. Check your internet."
 ok "signed in as $ME"
-gh student --help >/dev/null 2>&1 || {
+if gh student --help >/dev/null 2>&1; then
+  ok "student tools"
+elif student_installed; then
+  # Don't exit: joining a partner's lab uses only `gh api` and works fine.
+  blocked_note
+else
   printf '  setting up the student tools...\n'
   gh extension install foundation50/gh-student >/dev/null 2>&1 || die "Couldn't install gh-student."
-}
-ok "student tools"
+  ok "student tools"
+fi
 
 # find which classroom publishes this assignment (no login needed — it's a static file)
 ORG=""; CR=""; MODE="individual"
