@@ -257,11 +257,46 @@ find_existing() {
   return 1
 }
 
+# GitHub creates the repo first and copies the assignment files in a few
+# seconds LATER. Cloning inside that window gets an empty repo — and both
+# `git clone` and `git pull` exit 0 on an empty repo, so nothing looks wrong
+# and re-running never fixes it. Wait for the files, and repair a clone that
+# was made too early. (No pipe into grep here: pipefail turns grep's early
+# exit into a false negative.)
+repo_has_content() {
+  [ "$(gh api "repos/$1/commits?per_page=1" --jq 'length' 2>/dev/null)" = "1" ]
+}
+
+wait_for_content() {
+  repo_has_content "$1" && return 0
+  printf '  waiting for GitHub to finish preparing your files...\n'
+  local i=0
+  while [ "$i" -lt 15 ]; do
+    sleep 2; i=$((i + 1))
+    repo_has_content "$1" && return 0
+  done
+  return 1
+}
+
+is_empty_clone() { ! (cd "$1" && git rev-parse HEAD >/dev/null 2>&1); }
+
+fill_empty_clone() {
+  wait_for_content "$REPO" || return 1
+  (cd "$1" && git pull --ff-only origin HEAD >/dev/null 2>&1)
+}
+
+NOT_READY="GitHub hasn't finished preparing this assignment. Wait a minute, then run this again — nothing is lost."
+
 say "Getting the code"
 DIR="$(find_existing)" || DIR=""
 
 if [ -n "$DIR" ]; then
-  (cd "$DIR" && git pull --ff-only >/dev/null 2>&1) && ok "updated to the latest" || bad "couldn't update — ask a TA"
+  if is_empty_clone "$DIR"; then
+    bad "the copy you have is empty — repairing it"
+    fill_empty_clone "$DIR" && ok "repaired — your files are there now" || die "$NOT_READY"
+  else
+    (cd "$DIR" && git pull --ff-only >/dev/null 2>&1) && ok "updated to the latest" || bad "couldn't update — ask a TA"
+  fi
   ok "using the copy you already have: $DIR"
 else
   if [ -n "$COURSE" ] && [ -d "$COURSE" ]; then DIR="$COURSE/$NAME"
@@ -269,9 +304,14 @@ else
     DIR="$NAME"
     NO_COURSE_DIR=1
   fi
+  wait_for_content "$REPO" || die "$NOT_READY"
   if ! CLONE_ERR="$(gh repo clone "$REPO" "$DIR" 2>&1)"; then
     [ -n "$CLONE_ERR" ] && printf '%s\n' "  $CLONE_ERR" >&2
     die "Couldn't download the code. The message above says why."
+  fi
+  # belt and braces: the clone can still land empty if it raced the last commit
+  if is_empty_clone "$DIR"; then
+    fill_empty_clone "$DIR" || die "$NOT_READY"
   fi
   ok "downloaded to $(cd "$DIR" && pwd)"
   if [ "${NO_COURSE_DIR:-0}" = 1 ]; then
