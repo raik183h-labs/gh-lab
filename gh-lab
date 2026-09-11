@@ -367,11 +367,45 @@ checkout_broken() {
   [ "$missing" = "$total" ]
 }
 
-repair_checkout() {
+current_branch() {
   local br
   br="$(cd "$1" && git rev-parse --abbrev-ref HEAD 2>/dev/null)"
   [ -n "$br" ] && [ "$br" != HEAD ] || br=main
+  printf '%s\n' "$br"
+}
+
+remote_head_sha() {
+  local br
+  br="$(current_branch "$1")"          # resolve before the cd: $1 may be relative
+  (cd "$1" && git rev-parse --verify "refs/remotes/origin/$br" 2>/dev/null)
+}
+
+repair_checkout() {
+  local br
+  br="$(current_branch "$1")"
   (cd "$1" && git fetch origin >/dev/null 2>&1 && git reset --hard "origin/$br" >/dev/null 2>&1)
+}
+
+# The assignment was taken down and re-released, so the repo at this URL is a
+# brand new one that shares no commits with the copy on disk. git calls those
+# histories unrelated and refuses every pull, which used to surface as a flat
+# "couldn't update" while the student went on reading the old assignment.
+# Requires an already-fetched origin.
+histories_unrelated() {
+  local here there
+  here="$(cd "$1" && git rev-parse --verify HEAD 2>/dev/null)" || return 1
+  there="$(remote_head_sha "$1")" || return 1
+  [ -n "$here" ] && [ -n "$there" ] || return 1
+  [ "$here" = "$there" ] && return 1
+  ! (cd "$1" && git merge-base "$here" "$there" >/dev/null 2>&1)
+}
+
+# Move, never delete. Whatever they wrote in the old assignment stays on disk.
+retire_folder() {
+  local dest="$1-old" i=2
+  while [ -e "$dest" ]; do dest="$1-old-$i"; i=$((i + 1)); done
+  mv "$1" "$dest" 2>/dev/null || return 1
+  printf '%s\n' "$dest"
 }
 
 fill_empty_clone() {
@@ -392,12 +426,30 @@ if [ -n "$DIR" ]; then
     bad "your files didn't unpack properly — repairing it"
     repair_checkout "$DIR" && ok "repaired — your files are there now" \
       || die "Couldn't repair it. Show a TA this folder: $DIR"
+  elif (cd "$DIR" && git fetch origin >/dev/null 2>&1) && histories_unrelated "$DIR"; then
+    bad "this assignment was replaced after you downloaded it"
+    OLD="$(retire_folder "$DIR")" \
+      || die "Couldn't move your old copy aside. Show a TA this folder: $DIR"
+    printf '\n  Nothing was deleted. Your old copy is still on your computer, here:\n'
+    printf '    %s\n' "$(cd "$OLD" && pwd)"
+    printf '  Everything you wrote is in there and you can open it any time.\n'
+    printf '  Getting the new version now. The path it prints below is the one to\n'
+    printf '  work in from now on.\n\n'
+    REUSE_PARENT="$(dirname "$OLD")"
+    DIR=""
   else
     (cd "$DIR" && git pull --ff-only >/dev/null 2>&1) && ok "updated to the latest" || bad "couldn't update — ask a TA"
   fi
-  ok "using the copy you already have: $DIR"
-else
+  [ -n "$DIR" ] && ok "using the copy you already have: $DIR"
+fi
+
+if [ -z "$DIR" ]; then
+  # The course folder wins even when we just retired a copy from somewhere else.
+  # A replacement landing next to the old one would leave the assignment outside
+  # the course folder for good, and the students this happens to are the ones
+  # least able to go find it again later.
   if [ -n "$COURSE" ] && [ -d "$COURSE" ]; then DIR="$COURSE/$NAME"
+  elif [ -n "${REUSE_PARENT:-}" ]; then DIR="$REUSE_PARENT/$NAME"
   else
     DIR="$NAME"
     NO_COURSE_DIR=1
