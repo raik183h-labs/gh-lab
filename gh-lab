@@ -178,6 +178,21 @@ for pair in $CLASSROOMS; do
   [ -n "$m" ] && MODE="$m"
   break
 done
+# The setup guide's example commands use these placeholders, and students paste
+# example commands exactly as written. Say what happened instead of "check the
+# spelling", which sends them looking for a typo that isn't there.
+case "$(lc "$SLUG")" in
+  homework-n|lab-name)
+    if [ -z "$ORG" ]; then
+      bad "'$SLUG' is a placeholder, not a real assignment name."
+      printf "\n  The setup guide writes it that way to show you the shape of the command.\n"
+      printf "  Replace it with the assignment name your instructor posted, then run it\n"
+      printf "  again. Check Slack or ask a TA if you don't have the name handy.\n"
+      printf "\n  Nothing was created, so nothing needs undoing.\n\n"
+      exit 1
+    fi
+    ;;
+esac
 [ -z "$ORG" ] && die "No assignment called '$SLUG'. Check the spelling against what your instructor posted."
 ok "found $SLUG"
 
