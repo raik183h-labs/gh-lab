@@ -125,7 +125,11 @@ fi
 # it resolves to the folder of the file being linted — so it stays correct in
 # the multi-root course workspace, where a bare relative path would not.
 # ---------------------------------------------------------------------------
-CS_CONFIG_VALUE='${workspaceFolder}/config/raik-style.xml'
+# The live ruleset, read straight off the web by the Checkstyle extension
+# ("Supports http(s)://" in its own config picker). One source of truth, so a
+# rule change reaches every existing lab repo with no pull and no re-clone.
+# The tradeoff, accepted deliberately: no linting while offline.
+CS_CONFIG_VALUE="$STYLE_URL"
 
 refresh_style() {   # refresh_style <repo dir> [readonly]
   local dst="$1/config/raik-style.xml" tmp
@@ -179,9 +183,11 @@ check_lab_wiring() {   # check_lab_wiring <repo dir> [readonly]
   if has_file "$d/lib" '*.jar'; then ok "JUnit library"
   else bad "JUnit library MISSING from lib/ — tests will not run. Tell your instructor."; rc=1; fi
 
-  if has_file "$d/config" '*.xml'; then
-    refresh_style "$d" "$mode"
-  else bad "style ruleset MISSING from config/ — no linting. Tell your instructor."; rc=1; fi
+  # The ruleset is a URL now, not a file in the repo, so there is nothing local
+  # to be missing. Older repos may still carry a config/ copy from when it was
+  # committed; freshen it if so, purely so a student who re-points at it by hand
+  # while offline gets current rules rather than whatever shipped at clone time.
+  if has_file "$d/config" '*.xml'; then refresh_style "$d" "$mode"; fi
 
   cfg="$(json_str "$st" 'java.checkstyle.configuration')"
   if [ ! -f "$st" ] || [ "$cfg" != "$CS_CONFIG_VALUE" ] \
