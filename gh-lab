@@ -10,6 +10,12 @@ CLASSROOMS="raik183h-labs/raik-183h-labs RAIK183H-Fall2026/raik-183h"
 EXTENSIONS="specstory.specstory-vscode xyz.local-history redhat.java"
 CHECKSTYLE_ID="shengchen.vscode-checkstyle"
 CHECKSTYLE_VSIX="https://raw.githubusercontent.com/raik183h-labs/setup/main/CheckstyleForJava.vsix"
+# Canonical style ruleset. Each lab repo ships a copy so linting works offline
+# and on day one, but that copy is frozen at clone time — a mid-semester style
+# change would never reach the ~135 repos already on disk. So we refresh it
+# from here on every run. Fails open: no network, no 200, or an empty body all
+# leave the committed copy alone.
+STYLE_URL="https://raw.githubusercontent.com/raik183h-labs/setup/main/raik-style.xml"
 
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 ok()  { printf '  \033[32m✓\033[0m %s\n' "$*"; }
@@ -94,6 +100,100 @@ if [ "$SLUG" = "--here" ]; then
   die "Couldn't save that. Is git installed?"
 fi
 
+# ---------------------------------------------------------------------------
+# Lab wiring: the two things that make a lab repo actually work in Cursor.
+#
+#   lib/*.jar   the JUnit console-standalone jar. It shades in hamcrest, which
+#               plain junit-4.12.jar does NOT — that combination COMPILES fine
+#               and then dies at run time with
+#               ClassNotFoundException: org.hamcrest.SelfDescribing.
+#               Eclipse used to supply hamcrest invisibly through its JUnit
+#               container; Cursor has no such thing, so this broke the moment
+#               the course changed editors.
+#
+#   config/*.xml + .vscode/settings.json   the Checkstyle ruleset and the
+#               pointer to it. Every rule in the ruleset is severity=warning,
+#               so a missing or misspelled pointer produces NO errors and NO
+#               warnings — indistinguishable from clean code. That is why this
+#               is checked rather than assumed.
+#
+# settings.json is repaired in place when a key is missing or wrong, because a
+# student who hand-edits it, or an older template, otherwise silently loses
+# linting for the rest of the semester.
+#
+# ${workspaceFolder} is the ONLY variable the Checkstyle extension expands, and
+# it resolves to the folder of the file being linted — so it stays correct in
+# the multi-root course workspace, where a bare relative path would not.
+# ---------------------------------------------------------------------------
+CS_CONFIG_VALUE='${workspaceFolder}/config/raik-style.xml'
+
+refresh_style() {   # refresh_style <repo dir> [readonly]
+  local dst="$1/config/raik-style.xml" tmp
+  [ "${2:-repair}" = readonly ] && { ok "style ruleset"; return 0; }
+  [ -f "$dst" ] || { ok "style ruleset"; return 0; }
+  tmp="$(mktemp 2>/dev/null)" || { ok "style ruleset"; return 0; }
+  if curl -fsSL --max-time 10 "$STYLE_URL" -o "$tmp" 2>/dev/null && [ -s "$tmp" ] \
+     && grep -q '</module>' "$tmp" 2>/dev/null; then
+    if cmp -s "$tmp" "$dst"; then ok "style ruleset (current)"
+    else cp "$tmp" "$dst" && ok "style ruleset (updated)" || ok "style ruleset"; fi
+  else
+    ok "style ruleset"      # offline or not published yet: the copy on disk is fine
+  fi
+  rm -f "$tmp"
+}
+
+has_file() {   # has_file <dir> <glob>  — true if at least one match exists
+  local f
+  for f in "$1"/$2; do [ -e "$f" ] && return 0; done
+  return 1
+}
+
+# Read one top-level string key out of settings.json without a JSON parser.
+json_str() {   # json_str <file> <key>
+  sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" 2>/dev/null | head -1
+}
+
+write_settings() {   # write_settings <repo dir>
+  mkdir -p "$1/.vscode" || return 1
+  cat > "$1/.vscode/settings.json" <<JSON
+{
+    "java.project.sourcePaths": ["src"],
+    "java.project.outputPath": "bin",
+    "java.project.referencedLibraries": ["lib/**/*.jar"],
+    "java.checkstyle.configuration": "$CS_CONFIG_VALUE",
+    "java.checkstyle.autocheck": true,
+    "files.exclude": { "**/.history": true }
+}
+JSON
+}
+
+# Report on one lab folder. Repairs settings.json unless $2 is "readonly".
+# Returns 1 if something is wrong that we could not fix.
+check_lab_wiring() {   # check_lab_wiring <repo dir> [readonly]
+  local d="$1" mode="${2:-repair}" rc=0 st="$1/.vscode/settings.json" cfg
+  # Only Java labs have this wiring; a repo with no src/ isn't one.
+  [ -d "$d/src" ] || return 0
+
+  # A `for` over the glob rather than `ls`: an unmatched glob is a hard error in
+  # zsh and a literal string in bash, and neither should print anything here.
+  if has_file "$d/lib" '*.jar'; then ok "JUnit library"
+  else bad "JUnit library MISSING from lib/ — tests will not run. Tell your instructor."; rc=1; fi
+
+  if has_file "$d/config" '*.xml'; then
+    refresh_style "$d" "$mode"
+  else bad "style ruleset MISSING from config/ — no linting. Tell your instructor."; rc=1; fi
+
+  cfg="$(json_str "$st" 'java.checkstyle.configuration')"
+  if [ ! -f "$st" ] || [ "$cfg" != "$CS_CONFIG_VALUE" ] \
+     || ! grep -q 'referencedLibraries' "$st" 2>/dev/null; then
+    if [ "$mode" = readonly ]; then
+      bad "editor settings need repair — run:  gh $CMD $(basename "$d")"; rc=1
+    elif write_settings "$d"; then ok "editor settings (repaired)"
+    else bad "couldn't write $st"; rc=1; fi
+  else ok "editor settings"; fi
+  return $rc
+}
+
 if [ "$SLUG" = "--check" ] || [ "$SLUG" = "doctor" ]; then
   say "Setup check"
   printf '  OS ............ %s\n' "$(uname -s 2>/dev/null || echo unknown)"
@@ -137,6 +237,16 @@ if [ "$SLUG" = "--check" ] || [ "$SLUG" = "doctor" ]; then
   else
     bad "editor       no 'cursor' command — labs still work, they just won't auto-open"
     bad "extensions   can't check them without the 'cursor' command"
+  fi
+  if [ -n "$cd_now" ] && [ -d "$cd_now" ]; then
+    found=0
+    for d in "$cd_now"/*/; do
+      [ -d "$d/.git" ] && [ -d "$d/src" ] || continue
+      found=1
+      printf '  lab %s\n' "$(basename "$d")"
+      check_lab_wiring "${d%/}" readonly || true
+    done
+    [ "$found" = 0 ] && printf '  labs         none downloaded yet\n'
   fi
   for pair in $CLASSROOMS; do
     o="${pair%%/*}"; c="${pair##*/}"
@@ -528,6 +638,9 @@ install_extensions() {
     fi
   done
 }
+
+say "Checking your lab setup"
+check_lab_wiring "$DIR"
 
 say "Checking your editor"
 if [ -n "$EDITOR" ]; then install_extensions; else
