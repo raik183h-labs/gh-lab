@@ -337,6 +337,18 @@ invite_id() {   # id of our pending invitation to repo $1, if any
     --jq ".[] | select(.repository.full_name == \"$1\") | .id" 2>/dev/null | head -1
 }
 
+# `gh api repos/<name>` FOLLOWS GitHub's rename redirect: ask for a repo that has
+# since been renamed and you get HTTP 200 describing the NEW one. A bare
+# existence check therefore answers "you already have this" about a repo that is
+# now somebody else's assignment, and the student is handed the wrong lab with
+# no error anywhere. Compare identities instead of status codes — the repo we
+# asked for exists only if the name that comes back is the name we sent.
+repo_is() {   # repo_is <owner/name>
+  local got
+  got="$(gh api "repos/$1" --jq .full_name 2>/dev/null)" || return 1
+  [ "$(lc "$got")" = "$(lc "$1")" ]
+}
+
 have_access() { gh api "repos/$1/collaborators/$ME" --silent 2>/dev/null; }
 
 join_repo() {   # accept our invitation to $1; a private repo is invisible until we do
@@ -359,7 +371,7 @@ join_repo() {   # accept our invitation to $1; a private repo is invisible until
 partner_started() {
   [ -z "$THEIRS" ] && return 1
   [ -n "$(invite_id "$THEIRS")" ] && return 0
-  gh api "repos/$THEIRS" --silent 2>/dev/null
+  repo_is "$THEIRS"
 }
 
 created_at() { gh api "repos/$1" --jq .created_at 2>/dev/null; }
@@ -381,7 +393,7 @@ require_accept_scope() {   # only STARTING a repo needs this; joining one doesn'
 
 say "Setting up"
 M=0
-gh api "repos/$MINE" --silent 2>/dev/null && M=1
+repo_is "$MINE" && M=1
 
 if [ "$M" = 0 ] && partner_started; then
   # Partner got here first — join them, no new repo.
