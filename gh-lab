@@ -82,12 +82,20 @@ if [ -z "$SLUG" ]; then
   printf 'Usage:  gh %s <assignment-name>\n' "$CMD"
   if [ "$CMD" = homework ]; then printf 'Example: gh homework homework-3\n'
   else printf 'Example: gh lab lab-loops-1\n'; fi
+  printf '\nAlso:\n'
+  printf '  gh %s --here          put assignments in the folder you are in now\n' "$CMD"
+  printf '  gh %s --ide vscode    open your work in VS Code (or: cursor, auto)\n' "$CMD"
   printf '\nStuck? Run:  gh %s --check\n' "$CMD"; exit 1
 fi
 
 # Where assignments get downloaded. Set once with `gh lab --here`; kept in git
 # config so it works the same in Terminal and Git Bash and survives reinstalls.
 course_dir() { git config --global --get raik.coursedir 2>/dev/null; }
+
+# Which editor to open. Set once with `gh lab --ide vscode`, and kept in git
+# config next to the course folder for the same reasons. Empty means "decide
+# automatically", which is what everyone gets until they ask for something else.
+ide_pref() { git config --global --get raik.ide 2>/dev/null; }
 
 if [ "$SLUG" = "--here" ]; then
   say "Course folder"
@@ -98,6 +106,94 @@ if [ "$SLUG" = "--here" ]; then
     exit 0
   fi
   die "Couldn't save that. Is git installed?"
+fi
+
+# How to tell someone to put their editor's command on PATH. One place, because
+# the doctor, the `--ide` writer, and the extension installer all need to say it.
+ide_install_hint() {
+  if [ "$1" = code ]; then
+    printf "  In VS Code: Cmd/Ctrl+Shift+P, run \"Shell Command: Install 'code' command in PATH\".\n"
+  else
+    printf "  In Cursor: Cmd/Ctrl+Shift+P, run \"Install 'cursor' command\".\n"
+  fi
+}
+
+# Resolves what to open into three globals, so the caller can explain itself:
+#   IDE               the command to run, or empty if there is nothing to run
+#   IDE_SOURCE        "saved" or "found" — where that choice came from
+#   IDE_PREF_MISSING  a saved choice whose command isn't installed, else empty
+#
+# A saved choice wins. Otherwise Cursor, then VS Code, which is the course
+# default and is deliberate (the course moved to Cursor; see the note below).
+#
+# A saved choice whose command is missing is reported rather than quietly
+# swapped for the other editor. Opening an editor nobody picked looks like the
+# setting did nothing, and there is no error to search for.
+IDE=""
+IDE_SOURCE=""
+IDE_PREF_MISSING=""
+pick_editor() {
+  IDE=""; IDE_SOURCE=""; IDE_PREF_MISSING=""
+  local want
+  want="$(ide_pref)"
+  if [ -n "$want" ]; then
+    if command -v "$want" >/dev/null 2>&1; then
+      IDE="$want"; IDE_SOURCE=saved; return 0
+    fi
+    IDE_PREF_MISSING="$want"
+    return 0
+  fi
+  IDE_SOURCE=found
+  if   command -v cursor >/dev/null 2>&1; then IDE=cursor
+  elif command -v code   >/dev/null 2>&1; then IDE=code
+  fi
+}
+
+if [ "$SLUG" = "--ide" ]; then
+  say "Editor"
+  case "$(lc "${2:-}")" in
+    vscode|vs-code|code) ide=code ;;
+    cursor)              ide=cursor ;;
+    auto|default)
+      # `--unset` exits 5 when the key was never set, which is the same outcome
+      # we want, so the check is "is it gone now", not "did the command succeed".
+      git config --global --unset raik.ide >/dev/null 2>&1 || true
+      if [ -n "$(ide_pref)" ]; then die "Couldn't clear that. Is git installed?"; fi
+      ok "back to picking on its own"
+      printf '\n  %s will use whichever editor it finds, Cursor first.\n\n' "gh $CMD"
+      exit 0
+      ;;
+    "")
+      pick_editor
+      if [ -n "$IDE_PREF_MISSING" ]; then
+        bad "set to $IDE_PREF_MISSING, but there's no '$IDE_PREF_MISSING' command on this computer"
+      elif [ -z "$IDE" ]; then
+        bad "no editor found — neither 'cursor' nor 'code' is on this computer"
+      elif [ "$IDE_SOURCE" = saved ]; then
+        ok "$IDE (you chose this)"
+      else
+        ok "$IDE (found on this computer; you haven't chosen one)"
+      fi
+      printf '\n  To choose:  gh %s --ide vscode\n' "$CMD"
+      printf '              gh %s --ide cursor\n' "$CMD"
+      printf '              gh %s --ide auto     (go back to picking on its own)\n\n' "$CMD"
+      exit 0
+      ;;
+    *) die "I don't know the editor \"$2\". Use:  vscode  or  cursor  (or auto)" ;;
+  esac
+  if ! git config --global raik.ide "$ide" 2>/dev/null; then
+    die "Couldn't save that. Is git installed?"
+  fi
+  ok "$ide"
+  printf '\n  From now on, %s opens your work in %s.\n' "gh $CMD" "$ide"
+  if ! command -v "$ide" >/dev/null 2>&1; then
+    printf '\n'
+    bad "there's no '$ide' command on this computer yet, so nothing will open"
+    ide_install_hint "$ide"
+    printf '  Your choice is saved either way, so you only have to do that once.\n'
+  fi
+  printf '\n'
+  exit 0
 fi
 
 # ---------------------------------------------------------------------------
@@ -224,11 +320,14 @@ if [ "$SLUG" = "--check" ] || [ "$SLUG" = "doctor" ]; then
     bad "course folder not set — cd to your course folder and run:  gh $CMD --here"
   elif [ -d "$cd_now" ]; then ok "course folder $cd_now"
   else bad "course folder $cd_now (missing — re-run 'gh $CMD --here' somewhere that exists)"; fi
-  ED=""
-  if   command -v cursor >/dev/null 2>&1; then ED=cursor
-  elif command -v code   >/dev/null 2>&1; then ED=code; fi
+  pick_editor
+  ED="$IDE"
   if [ -n "$ED" ]; then
-    ok "editor       $ED"
+    # Say where the choice came from. "editor code" alone can't distinguish a
+    # setting that is working from a default that happens to agree with it, and
+    # those two need different advice the day the other editor shows up.
+    if [ "$IDE_SOURCE" = saved ]; then ok "editor       $ED (your choice)"
+    else ok "editor       $ED (found here; choose with 'gh $CMD --ide')"; fi
     if have="$("$ED" --list-extensions 2>/dev/null | tr 'A-Z' 'a-z')"; then :; else have=""; fi
     if [ -z "$have" ] && ! "$ED" --list-extensions >/dev/null 2>&1; then
       bad "extensions   couldn't ask $ED — open $ED once, then run this again"
@@ -240,9 +339,14 @@ if [ "$SLUG" = "--check" ] || [ "$SLUG" = "doctor" ]; then
           else bad "  $(printf '%-24s' "$label") MISSING — it installs when you run your first lab"; fi
       done
     fi
+  elif [ -n "$IDE_PREF_MISSING" ]; then
+    bad "editor       set to $IDE_PREF_MISSING, but there's no '$IDE_PREF_MISSING' command here"
+    ide_install_hint "$IDE_PREF_MISSING"
+    printf "                 or switch:  gh %s --ide auto\n" "$CMD"
+    bad "extensions   can't check them without the '$IDE_PREF_MISSING' command"
   else
-    bad "editor       no 'cursor' command — labs still work, they just won't auto-open"
-    bad "extensions   can't check them without the 'cursor' command"
+    bad "editor       no 'cursor' or 'code' command — labs still work, they just won't auto-open"
+    bad "extensions   can't check them without one of those commands"
   fi
   if [ -n "$cd_now" ] && [ -d "$cd_now" ]; then
     found=0
@@ -627,15 +731,15 @@ build_workspace() {
 WS_OK=0
 build_workspace && WS_OK=1
 
-EDITOR=""
-if   command -v cursor >/dev/null 2>&1; then EDITOR=cursor
-elif command -v code   >/dev/null 2>&1; then EDITOR=code
-fi
+# Sets IDE / IDE_SOURCE / IDE_PREF_MISSING. Deliberately not named EDITOR: that
+# is the user's variable, and the old code assigned to it, so an exported
+# `EDITOR=code` was accepted and then thrown away with nothing printed.
+pick_editor
 
 install_extensions() {
-  [ -z "$EDITOR" ] && return 0
+  [ -z "$IDE" ] && return 0
   local have missing="" vsix
-  have="$("$EDITOR" --list-extensions 2>/dev/null | tr 'A-Z' 'a-z')" || return 0
+  have="$("$IDE" --list-extensions 2>/dev/null | tr 'A-Z' 'a-z')" || return 0
   for e in $EXTENSIONS; do
     printf '%s\n' "$have" | grep -qx "$(lc "$e")" || missing="$missing $e"
   done
@@ -647,11 +751,11 @@ install_extensions() {
     if [ "$e" = "$CHECKSTYLE_ID" ]; then
       vsix="${TMPDIR:-/tmp}/CheckstyleForJava.vsix"
       curl -fsSL "$CHECKSTYLE_VSIX" -o "$vsix" 2>/dev/null \
-        && "$EDITOR" --install-extension "$vsix" --force >/dev/null 2>&1 \
+        && "$IDE" --install-extension "$vsix" --force >/dev/null 2>&1 \
         && ok "checkstyle (course linter)" \
         || bad "couldn't install Checkstyle — see the setup guide to add it by hand"
     else
-      "$EDITOR" --install-extension "$e" --force >/dev/null 2>&1 \
+      "$IDE" --install-extension "$e" --force >/dev/null 2>&1 \
         && ok "${e#*.}" || bad "couldn't install $e — install it from the Extensions panel"
     fi
   done
@@ -661,19 +765,25 @@ say "Checking your lab setup"
 check_lab_wiring "$DIR"
 
 say "Checking your editor"
-if [ -n "$EDITOR" ]; then install_extensions; else
-  bad "No 'cursor' command, so I can't set up your editor extensions."
-  printf "  In Cursor: Cmd/Ctrl+Shift+P, run \"Install 'cursor' command\", then run this again.\n"
+if [ -n "$IDE" ]; then install_extensions
+elif [ -n "$IDE_PREF_MISSING" ]; then
+  bad "You picked $IDE_PREF_MISSING, but there's no '$IDE_PREF_MISSING' command, so I can't set up your extensions."
+  ide_install_hint "$IDE_PREF_MISSING"
+  printf "  Or switch editors:  gh %s --ide auto\n" "$CMD"
+else
+  bad "No 'cursor' or 'code' command, so I can't set up your editor extensions."
+  ide_install_hint cursor
+  printf "  Then run this again.\n"
 fi
 
 say "Opening"
-if [ -n "$EDITOR" ]; then
-  TARGET="$DIR"; WHAT="opened in $EDITOR"
+if [ -n "$IDE" ]; then
+  TARGET="$DIR"; WHAT="opened in $IDE"
   if [ "$WS_OK" = 1 ]; then
     TARGET="$WS"
     WHAT="opened your course workspace — every assignment is in this one window"
   fi
-  if "$EDITOR" "$TARGET" >/dev/null 2>&1; then ok "$WHAT"
+  if "$IDE" "$TARGET" >/dev/null 2>&1; then ok "$WHAT"
   else
     bad "Couldn't open your editor automatically."
     if [ "$WS_OK" = 1 ]; then
@@ -683,7 +793,13 @@ if [ -n "$EDITOR" ]; then
     fi
   fi
 else
-  bad "Couldn't open your editor automatically."
+  if [ -n "$IDE_PREF_MISSING" ]; then
+    bad "You picked $IDE_PREF_MISSING, but there's no '$IDE_PREF_MISSING' command on this computer."
+    ide_install_hint "$IDE_PREF_MISSING"
+    printf "  Or switch editors:  gh %s --ide auto\n" "$CMD"
+  else
+    bad "Couldn't open your editor automatically."
+  fi
   printf "  Open this folder yourself:  %s\n" "$(cd "$DIR" && pwd)"
 fi
 printf '\n  \033[1mReady.\033[0m Your work goes in %s/\n' "$DIR"
