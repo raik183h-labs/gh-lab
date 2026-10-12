@@ -12,9 +12,21 @@ Then, from the folder where you keep your course work:
 gh lab lab-loops-1
 ```
 
-It asks for your partner's GitHub username, sets up your team's repository,
-downloads the code, and opens it in your editor. Safe to run again any time — if
-you close your terminal or come back the next day, run the same command.
+It asks who you are working with, sets up your team's repository, downloads the
+code, and opens it in your editor. Safe to run again any time — if you close
+your terminal or come back the next day, run the same command.
+
+## Working with a partner, or two
+
+Type your teammates' GitHub usernames separated by spaces:
+
+```
+Their GitHub usernames, separated by spaces (press Enter if working alone): logan drew
+```
+
+Everyone on the team runs the same command and lists the *other* members. One
+repository is created for the team — whoever ran it first — and everyone else is
+added to it. Press Enter with nothing typed if you are working alone.
 
 ## Choosing your editor
 

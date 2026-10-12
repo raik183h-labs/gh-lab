@@ -385,7 +385,7 @@ else
 fi
 
 # find which classroom publishes this assignment (no login needed — it's a static file)
-ORG=""; CR=""; MODE="individual"
+ORG=""; CR=""; MODE="individual"; MAXGROUP=""
 for pair in $CLASSROOMS; do
   o="${pair%%/*}"; c="${pair##*/}"
   url="https://$(lc "$o").github.io/classroom50/$c/assignments.json"
@@ -396,6 +396,12 @@ for pair in $CLASSROOMS; do
   m=$(printf '%s' "$doc" | grep -A 16 "\"slug\": \"$SLUG\"" | grep -m1 '"mode"' \
        | sed 's/.*"mode"[^"]*"\([^"]*\)".*/\1/')
   [ -n "$m" ] && MODE="$m"
+  # ...and so does the team-size cap. Knowing it here lets us reject an
+  # over-large team with a sentence a student can act on, instead of letting
+  # the invitation fail later with an API error nobody can read.
+  g=$(printf '%s' "$doc" | grep -A 16 "\"slug\": \"$SLUG\"" | grep -m1 '"max_group_size"' \
+       | grep -o '[0-9][0-9]*' | head -1)
+  [ -n "$g" ] && MAXGROUP="$g"
   break
 done
 # The setup guide's example commands use these placeholders, and students paste
@@ -416,25 +422,60 @@ esac
 [ -z "$ORG" ] && die "No assignment called '$SLUG'. Check the spelling against what your instructor posted."
 ok "found $SLUG"
 
-PARTNER=""
+# Space-separated, because a team of three is one prompt either way and
+# re-prompting "and who else?" invites an answer nobody reads. Commas are
+# accepted too: a student told "separated by spaces" still types commas.
+PARTNERS=""
+NPARTNERS=0
 if [ "$MODE" = "group" ]; then
   say "Who are you working with today?"
-  printf '  Partner'"'"'s GitHub username (press Enter if working alone): '
-  if ! { read -r PARTNER </dev/tty; } 2>/dev/null; then read -r PARTNER || PARTNER=""; fi
-  # tolerate "@name", a profile URL, or stray spaces
-  PARTNER="$(printf '%s' "${PARTNER:-}" | tr -d '[:space:]' | sed 's|.*/||; s|^@||')"
-  if [ -n "$PARTNER" ]; then
-    gh api "users/$PARTNER" --jq .login >/dev/null 2>&1 \
-      || die "There's no GitHub user called '$PARTNER'. That's their username, not their real name."
-    [ "$(lc "$PARTNER")" = "$(lc "$ME")" ] && die "That's your own username — enter your partner's."
-    ok "partner: $PARTNER"
+  printf '  Their GitHub usernames, separated by spaces (press Enter if working alone): '
+  if ! { read -r RAW </dev/tty; } 2>/dev/null; then read -r RAW || RAW=""; fi
+  # Unquoted on purpose: this is the split. Tabs and runs of spaces come out
+  # the same as single spaces, which is what a typed-in list looks like.
+  for p in $(printf '%s' "${RAW:-}" | tr ',' ' '); do
+    # tolerate "@name" and profile URLs
+    p="$(printf '%s' "$p" | sed 's|.*/||; s|^@||')"
+    [ -z "$p" ] && continue
+    [ "$(lc "$p")" = "$(lc "$ME")" ] && die "That's your own username — list your teammates, not yourself."
+    # already listed? a repeated name is a typo, not a third teammate
+    case " $(lc "$PARTNERS") " in *" $(lc "$p") "*) continue ;; esac
+    gh api "users/$p" --jq .login >/dev/null 2>&1 \
+      || die "There's no GitHub user called '$p'. That's their username, not their real name."
+    PARTNERS="${PARTNERS:+$PARTNERS }$p"
+    NPARTNERS=$((NPARTNERS + 1))
+  done
+  if [ -n "$MAXGROUP" ] && [ "$((NPARTNERS + 1))" -gt "$MAXGROUP" ]; then
+    bad "That's a team of $((NPARTNERS + 1)), and this lab allows up to $MAXGROUP."
+    printf '  You listed: %s\n' "$PARTNERS"
+    printf '  Nothing was created, so nothing needs undoing. Check with your instructor\n'
+    printf '  before splitting up — they may want the team recorded differently.\n\n'
+    exit 1
+  fi
+  if [ "$NPARTNERS" = 0 ]; then :
+  elif [ "$NPARTNERS" = 1 ]; then ok "partner: $PARTNERS"
+  else ok "team: $PARTNERS"
   fi
 else
   ok "this one is individual work — no partner needed"
 fi
 
 MINE="$ORG/$CR-$SLUG-$(lc "$ME")"
-THEIRS=""; [ -n "$PARTNER" ] && THEIRS="$ORG/$CR-$SLUG-$(lc "$PARTNER")"
+repo_of() { printf '%s/%s-%s-%s' "$ORG" "$CR" "$SLUG" "$(lc "$1")"; }
+
+# Who founded a given repo. Report the name the way the student typed it --
+# the repo name is lowercased, and "logan" looks like a different person
+# from the "LoganFeather" they just entered.
+owner_of() {
+  local u p
+  u="${1#"$ORG/$CR-$SLUG-"}"
+  for p in $PARTNERS; do
+    [ "$(lc "$p")" = "$u" ] && { printf '%s' "$p"; return 0; }
+  done
+  printf '%s' "$u"
+}
+
+in_list() { case " $2 " in *" $1 "*) return 0 ;; esac; return 1; }
 
 invite_id() {   # id of our pending invitation to repo $1, if any
   gh api user/repository_invitations --paginate \
@@ -472,10 +513,36 @@ join_repo() {   # accept our invitation to $1; a private repo is invisible until
 
 # Has our partner already founded the team repo? A pending invitation proves it
 # even though the repo itself is still invisible to us.
-partner_started() {
-  [ -z "$THEIRS" ] && return 1
-  [ -n "$(invite_id "$THEIRS")" ] && return 0
-  repo_is "$THEIRS"
+# Every repo this team could already be working in: mine if it exists, plus
+# any teammate's that does. A pending invitation proves a teammate's repo
+# exists even while the repo itself is invisible to us, so accept invitations
+# as we find them -- unaccepted, the repo stays private and created_at below
+# has nothing to read.
+collect_candidates() {
+  local p r
+  CANDIDATES=""
+  repo_is "$MINE" && CANDIDATES="$MINE"
+  for p in $PARTNERS; do
+    r="$(repo_of "$p")"
+    if [ -n "$(invite_id "$r")" ] || repo_is "$r"; then
+      join_repo "$r" >/dev/null 2>&1
+      CANDIDATES="${CANDIDATES:+$CANDIDATES }$r"
+    fi
+  done
+}
+
+# In a team of three, two people can start at the same moment, so the repo
+# created FIRST wins. Every member runs this same comparison over the same
+# set of repos, so they all reach the same answer without coordinating.
+earliest() {
+  local r at best best_at
+  best=""; best_at=""
+  for r in $CANDIDATES; do
+    at="$(created_at "$r")"
+    [ -z "$at" ] && continue
+    if [ -z "$best" ] || [ "$at" \< "$best_at" ]; then best="$r"; best_at="$at"; fi
+  done
+  printf '%s' "$best"
 }
 
 created_at() { gh api "repos/$1" --jq .created_at 2>/dev/null; }
@@ -496,54 +563,76 @@ require_accept_scope() {   # only STARTING a repo needs this; joining one doesn'
 }
 
 say "Setting up"
-M=0
-repo_is "$MINE" && M=1
+collect_candidates
+REPO="$(earliest)"
 
-if [ "$M" = 0 ] && partner_started; then
-  # Partner got here first — join them, no new repo.
-  REPO="$THEIRS"
-  ok "$PARTNER started this one — joining their repo"
-  join_repo "$REPO" || die "No invitation from $PARTNER yet. Wait a few seconds and run this again."
-  ok "you have access"
-else
-  if [ "$M" = 1 ]; then
-    REPO="$MINE"; ok "picking up where you left off"
-  else
-    REPO="$MINE"
-    require_accept_scope
-    if ! ACCEPT_ERR="$(gh student accept "$ORG" "$CR" "$SLUG" 2>&1)"; then
-      [ -n "$ACCEPT_ERR" ] && printf '%s\n' "  $ACCEPT_ERR" >&2
-      die "Couldn't start '$SLUG'. If the message above mentions an invitation, accept yours at github.com/$ORG — otherwise show this to your instructor."
-    fi
-    if [ "$MODE" = "group" ]; then ok "started your team's repo"; else ok "started your repo"; fi
+if [ -z "$REPO" ]; then
+  # Nobody on this team has started yet, so we do.
+  require_accept_scope
+  if ! ACCEPT_ERR="$(gh student accept "$ORG" "$CR" "$SLUG" 2>&1)"; then
+    [ -n "$ACCEPT_ERR" ] && printf '%s\n' "  $ACCEPT_ERR" >&2
+    die "Couldn't start '$SLUG'. If the message above mentions an invitation, accept yours at github.com/$ORG — otherwise show this to your instructor."
   fi
+  # "team" only when there is actually a team -- a group lab done alone is not one.
+  if [ "$NPARTNERS" -gt 0 ]; then ok "started your team's repo"; else ok "started your repo"; fi
+  # A teammate may have started in the same breath, so ask again now that our
+  # own repo exists and let the earlier one win.
+  collect_candidates
+  REPO="$(earliest)"
+  [ -z "$REPO" ] && REPO="$MINE"   # created, but GitHub hasn't caught up yet
+elif [ "$REPO" = "$MINE" ]; then
+  ok "picking up where you left off"
+fi
 
-  # Your partner may have started at the same moment. Re-check, and if you both
-  # did, the repo that was actually created FIRST wins. Both of you run this
-  # same check and reach the same answer.
-  if partner_started; then
-    join_repo "$THEIRS" >/dev/null 2>&1
-    mine_at=$(created_at "$MINE"); theirs_at=$(created_at "$THEIRS")
-    if [ -n "$theirs_at" ] && [ -n "$mine_at" ] && [ "$theirs_at" \< "$mine_at" ]; then
-      bad "You and $PARTNER started at the same moment — theirs came first."
-      printf '  Switching to their repo so your work stays together.\n'
-      REPO="$THEIRS"
-      have_access "$REPO" || die "Couldn't get access to $PARTNER's repo. Tell your instructor."
-      ok "joined $PARTNER's repo"
-      printf '  (Your instructor will clean up the spare one — don'"'"'t worry about it.)\n'
-    else
-      ok "you and $PARTNER started together — yours came first, so it's the one you'll both use"
-    fi
+if [ "$REPO" != "$MINE" ]; then
+  OWNER="$(owner_of "$REPO")"
+  if in_list "$MINE" "$CANDIDATES"; then
+    bad "You and $OWNER both started this one — theirs came first."
+    printf '  Switching to their repo so your work stays together.\n'
+  else
+    ok "$OWNER started this one — joining their repo"
+  fi
+  join_repo "$REPO" || die "No invitation from $OWNER yet. Wait a few seconds and run this again."
+  ok "you have access"
+  in_list "$MINE" "$CANDIDATES" \
+    && printf '  (Your instructor will clean up the spare one — don'"'"'t worry about it.)\n'
+fi
+
+# An invitation that hasn't been accepted yet still counts as added -- the
+# teammate simply hasn't run the command. Without this, the second run of a
+# three-person setup reports "Couldn't add" about someone who was added
+# correctly a minute ago. Listing invitations needs admin on the repo, so
+# treat a failed call as "can't tell" and stay quiet rather than guess.
+PENDING=""; PENDING_KNOWN=0
+if [ "$NPARTNERS" -gt 0 ]; then
+  if PENDING="$(gh api "repos/$REPO/invitations" --jq '.[].invitee.login' 2>/dev/null | tr '\n' ' ')"; then
+    PENDING="$(lc "$PENDING")"; PENDING_KNOWN=1
   fi
 fi
 
-if [ -n "$PARTNER" ] && [ "$REPO" = "$MINE" ]; then
-  if gh api "repos/$REPO/collaborators/$PARTNER" --silent 2>/dev/null; then ok "$PARTNER already has access"
-  else
-    gh student invite "$REPO" "$PARTNER" >/dev/null 2>&1 \
-      && ok "added $PARTNER — they just run the same command" \
-      || bad "Couldn't add $PARTNER — are they enrolled? Tell your instructor."
-  fi
+if [ "$NPARTNERS" -gt 0 ] && [ "$REPO" = "$MINE" ]; then
+  for p in $PARTNERS; do
+    if gh api "repos/$REPO/collaborators/$p" --silent 2>/dev/null; then ok "$p already has access"
+    elif in_list "$(lc "$p")" "$PENDING"; then ok "$p is already invited — they just run the same command"
+    else
+      gh student invite "$REPO" "$p" >/dev/null 2>&1 \
+        && ok "added $p — they just run the same command" \
+        || bad "Couldn't add $p — are they enrolled? Tell your instructor."
+    fi
+  done
+elif [ "$NPARTNERS" -gt 0 ]; then
+  # We joined someone else's repo, and only its owner can add collaborators.
+  # Say so when a teammate is definitely missing: staying quiet is how a team
+  # of three ends up working in two repos with every line reading OK.
+  OWNER="$(owner_of "$REPO")"
+  for p in $PARTNERS; do
+    [ "$(lc "$p")" = "$(lc "$OWNER")" ] && continue
+    gh api "repos/$REPO/collaborators/$p" --silent 2>/dev/null && continue
+    [ "$PENDING_KNOWN" = 1 ] || continue
+    in_list "$(lc "$p")" "$PENDING" && continue
+    bad "$p isn't on this repo yet, and only $OWNER can add them."
+    printf '  Ask %s to run this same command again and list %s.\n' "$OWNER" "$p"
+  done
 fi
 
 NAME="$(basename "$REPO")"
