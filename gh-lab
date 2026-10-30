@@ -102,9 +102,26 @@ ide_pref() { git config --global --get raik.ide 2>/dev/null; }
 # <classroom>/<key>/assignments.json instead of <classroom>/assignments.json.
 # The key is NOT a password: anyone holding it can read the file. It only keeps
 # the labs you haven't reached yet off an address you can guess from the org
-# name. Saved once with `gh lab --key`, in git config alongside the course
-# folder and the editor choice, for the same reasons.
-lab_key() { git config --global --get raik.labkey 2>/dev/null; }
+# name.
+#
+# Nobody should have to type it. You are already a member of the course's
+# GitHub org, so gh can read the key on your behalf from a repo only members
+# can see. It is then cached in git config next to the course folder and the
+# editor choice, so the usual run costs no API call. `gh lab --key` stays for
+# the case where someone has the key but not the membership yet.
+lab_key()      { git config --global --get raik.labkey 2>/dev/null; }
+save_lab_key() { git config --global raik.labkey "$1" >/dev/null 2>&1 || true; }
+
+# Empty and nonzero for anyone the org will not show it to, which is the same
+# answer as "no such repo": from out here there is nothing to tell apart.
+KEY_REPO="course-config"
+KEY_PATH="key"
+org_key() {   # org_key <org>
+  command -v gh >/dev/null 2>&1 || return 1
+  gh api -H "Accept: application/vnd.github.raw" \
+    "repos/$1/$KEY_REPO/contents/$KEY_PATH" 2>/dev/null \
+    | tr -d '[:space:]' | grep -Eo '^[a-z0-9]{4,64}$'
+}
 
 manifest_url() {   # manifest_url <org> <classroom> [key]
   printf 'https://%s.github.io/classroom50/%s%s/assignments.json' \
@@ -115,20 +132,30 @@ manifest_url() {   # manifest_url <org> <classroom> [key]
 # (empty when none was needed) rather than echoing, because a caller using
 # $(...) would run this in a subshell and lose the key.
 #
-# Keyed first, then plain. Homework is a different classroom and may not use a
-# key at all, so a saved key must not break it; and a classroom still published
-# in the open must keep working for a student who hasn't saved the key yet.
 MANIFEST_DOC=""
 MANIFEST_KEY=""
+try_manifest() {   # try_manifest <org> <classroom> [key]
+  MANIFEST_DOC=$(curl -fsSL "$(manifest_url "$1" "$2" "${3:-}")" 2>/dev/null) \
+    || { MANIFEST_DOC=""; return 1; }
+  MANIFEST_KEY="${3:-}"
+  return 0
+}
+
+# Cached key, then the plain address, then ask the org. That order is what lets
+# a rotated key heal itself: when the old key stops working the plain address
+# fails too, so the only way left is to go and fetch the current one. Homework
+# is a different classroom and may not use a key at all, which the plain
+# address settles before any of this costs an API call.
 fetch_manifest() {   # fetch_manifest <org> <classroom>
   local k
   MANIFEST_DOC=""; MANIFEST_KEY=""
   k="$(lab_key)"
-  if [ -n "$k" ] && MANIFEST_DOC=$(curl -fsSL "$(manifest_url "$1" "$2" "$k")" 2>/dev/null); then
-    MANIFEST_KEY="$k"; return 0
-  fi
-  MANIFEST_DOC=$(curl -fsSL "$(manifest_url "$1" "$2")" 2>/dev/null) || { MANIFEST_DOC=""; return 1; }
-  return 0
+  if [ -n "$k" ] && try_manifest "$1" "$2" "$k"; then return 0; fi
+  if try_manifest "$1" "$2"; then return 0; fi
+  k="$(org_key "$1")" || return 1
+  [ -n "$k" ] || return 1
+  if try_manifest "$1" "$2" "$k"; then save_lab_key "$k"; return 0; fi
+  return 1
 }
 
 if [ "$SLUG" = "--here" ]; then
@@ -234,8 +261,8 @@ if [ "$SLUG" = "--key" ]; then
   say "Access key"
   case "$(lc "${2:-}")" in
     "")
-      if [ -n "$(lab_key)" ]; then ok "saved on this computer"; else bad "not set"; fi
-      printf '\n  Your instructor posts the key with the lab. To save it:\n'
+      if [ -n "$(lab_key)" ]; then ok "saved on this computer"; else ok "not saved — it is fetched for you when a lab needs it"; fi
+      printf '\n  You should never need this. If your instructor gave you a key anyway:\n'
       printf '    gh %s --key <the-key-your-instructor-posted>\n' "$CMD"
       printf '    gh %s --key none     (forget it again)\n\n' "$CMD"
       exit 0
@@ -428,8 +455,10 @@ if [ "$SLUG" = "--check" ] || [ "$SLUG" = "doctor" ]; then
     [ "$found" = 0 ] && printf '  labs         none downloaded yet\n'
   fi
   if [ -n "$(lab_key)" ]
-    then ok "access key   saved"
-    else printf '  access key   none saved (fine until a lab says it cannot be found)\n'; fi
+    then ok "access key   saved on this computer"
+  elif [ -n "$(org_key "${CLASSROOMS%%/*}")" ]
+    then ok "access key   available from your course org"
+    else printf '  access key   none, and your course org would not give one out\n'; fi
   for pair in $CLASSROOMS; do
     o="${pair%%/*}"; c="${pair##*/}"
     if fetch_manifest "$o" "$c"
@@ -494,7 +523,10 @@ esac
 if [ -z "$ORG" ]; then
   # A missing key looks exactly like a typo from here, and a student who has
   # never heard of the key will hunt for a misspelling that isn't there.
-  [ -z "$(lab_key)" ] && printf "\n  If your instructor posted an access key with this lab, save it first:\n    gh %s --key <the-key>\n" "$CMD"
+  if [ -z "$(lab_key)" ] && [ -z "$(org_key "${CLASSROOMS%%/*}")" ]; then
+    printf "\n  Your GitHub account also isn't being recognised as part of this course,\n"
+    printf "  which can cause exactly this. Try:  gh student login\n"
+  fi
   die "No assignment called '$SLUG'. Check the spelling against what your instructor posted."
 fi
 ok "found $SLUG"
