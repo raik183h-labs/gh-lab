@@ -109,8 +109,22 @@ ide_pref() { git config --global --get raik.ide 2>/dev/null; }
 # can see. It is then cached in git config next to the course folder and the
 # editor choice, so the usual run costs no API call. `gh lab --key` stays for
 # the case where someone has the key but not the membership yet.
-lab_key()      { git config --global --get raik.labkey 2>/dev/null; }
-save_lab_key() { git config --global raik.labkey "$1" >/dev/null 2>&1 || true; }
+# One key per classroom org. The labs org and the homework org have different
+# ones, and a single cached key would be wrong for whichever classroom it did
+# not come from, so the two would overwrite each other on every run.
+# raik.labkey without an org is where the key lived before 2026-11; it is read
+# as a fallback so nobody re-fetches a key they already have, and cleared by
+# `--key none`.
+lab_key()      { git config --global --get "raik.$1.labkey" 2>/dev/null \
+                 || git config --global --get raik.labkey 2>/dev/null; }
+save_lab_key() { git config --global "raik.$1.labkey" "$2" >/dev/null 2>&1 || true; }
+any_lab_key()  { git config --global --get-regexp '^raik\..*\.labkey$' 2>/dev/null \
+                 | head -1 | awk '{print $2}'; }
+forget_lab_keys() {
+  git config --global --get-regexp '^raik\..*\.labkey$' 2>/dev/null | awk '{print $1}' \
+    | while read -r n; do git config --global --unset "$n" >/dev/null 2>&1 || true; done
+  git config --global --unset raik.labkey >/dev/null 2>&1 || true
+}
 
 # Empty and nonzero for anyone the org will not show it to, which is the same
 # answer as "no such repo": from out here there is nothing to tell apart.
@@ -149,12 +163,12 @@ try_manifest() {   # try_manifest <org> <classroom> [key]
 fetch_manifest() {   # fetch_manifest <org> <classroom>
   local k
   MANIFEST_DOC=""; MANIFEST_KEY=""
-  k="$(lab_key)"
+  k="$(lab_key "$1")"
   if [ -n "$k" ] && try_manifest "$1" "$2" "$k"; then return 0; fi
   if try_manifest "$1" "$2"; then return 0; fi
   k="$(org_key "$1")" || return 1
   [ -n "$k" ] || return 1
-  if try_manifest "$1" "$2" "$k"; then save_lab_key "$k"; return 0; fi
+  if try_manifest "$1" "$2" "$k"; then save_lab_key "$1" "$k"; return 0; fi
   return 1
 }
 
@@ -261,7 +275,7 @@ if [ "$SLUG" = "--key" ]; then
   say "Access key"
   case "$(lc "${2:-}")" in
     "")
-      if [ -n "$(lab_key)" ]; then ok "saved on this computer"; else ok "not saved — it is fetched for you when a lab needs it"; fi
+      if [ -n "$(any_lab_key)" ]; then ok "saved on this computer"; else ok "not saved — it is fetched for you when a lab needs it"; fi
       printf '\n  You should never need this. If your instructor gave you a key anyway:\n'
       printf '    gh %s --key <the-key-your-instructor-posted>\n' "$CMD"
       printf '    gh %s --key none     (forget it again)\n\n' "$CMD"
@@ -270,8 +284,8 @@ if [ "$SLUG" = "--key" ]; then
     none|clear|unset)
       # Same as --ide auto: --unset exits 5 when it was never set, which is the
       # outcome we want, so the check is "is it gone now", not "did that work".
-      git config --global --unset raik.labkey >/dev/null 2>&1 || true
-      [ -n "$(lab_key)" ] && die "Couldn't clear that. Is git installed?"
+      forget_lab_keys
+      [ -n "$(any_lab_key)" ] && die "Couldn't clear that. Is git installed?"
       ok "forgotten"
       printf '\n  %s will look for labs at the public address again.\n\n' "gh $CMD"
       exit 0
@@ -283,10 +297,22 @@ if [ "$SLUG" = "--key" ]; then
   case "$key" in
     *[!a-z0-9]*) die "That doesn't look like a key. Keys are letters and digits only, no spaces." ;;
   esac
-  if ! git config --global raik.labkey "$key" 2>/dev/null; then
-    die "Couldn't save that. Is git installed?"
+  # A key belongs to one classroom, and only the classroom it opens can say
+  # which. Trying it is also the only way to tell a real key from a typo
+  # before it turns into "no assignment called that" three commands later.
+  saved=0
+  for pair in $CLASSROOMS; do
+    o="${pair%%/*}"; c="${pair##*/}"
+    if try_manifest "$o" "$c" "$key"; then
+      save_lab_key "$o" "$key"; saved=1; ok "saved for $o"
+    fi
+  done
+  if [ "$saved" = 0 ]; then
+    bad "that key did not open any of this course's classrooms"
+    printf '\n  Nothing was saved. Check it against what your instructor posted.\n'
+    printf '  If you are sure it is right, you may just be offline.\n\n'
+    exit 1
   fi
-  ok "saved"
   printf '\n  You only have to do this once. If a lab still cannot be found,\n'
   printf '  check the key against what your instructor posted.\n\n'
   exit 0
@@ -454,7 +480,7 @@ if [ "$SLUG" = "--check" ] || [ "$SLUG" = "doctor" ]; then
     done
     [ "$found" = 0 ] && printf '  labs         none downloaded yet\n'
   fi
-  if [ -n "$(lab_key)" ]
+  if [ -n "$(any_lab_key)" ]
     then ok "access key   saved on this computer"
   elif [ -n "$(org_key "${CLASSROOMS%%/*}")" ]
     then ok "access key   available from your course org"
@@ -523,7 +549,7 @@ esac
 if [ -z "$ORG" ]; then
   # A missing key looks exactly like a typo from here, and a student who has
   # never heard of the key will hunt for a misspelling that isn't there.
-  if [ -z "$(lab_key)" ] && [ -z "$(org_key "${CLASSROOMS%%/*}")" ]; then
+  if [ -z "$(any_lab_key)" ] && [ -z "$(org_key "${CLASSROOMS%%/*}")" ]; then
     printf "\n  Your GitHub account also isn't being recognised as part of this course,\n"
     printf "  which can cause exactly this. Try:  gh student login\n"
   fi
